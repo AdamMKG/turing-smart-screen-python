@@ -88,15 +88,20 @@ class SleepMonitor:
                 # Step 2: Give the USB serial device time to re-enumerate after
                 # the host controller resumes.  Without this pause the serial
                 # writes below can fail or silently drop data.
-                logger.debug("Waiting 2s for USB serial device to stabilise...")
-                time.sleep(2)
+                logger.debug("Waiting 3s for USB serial device to stabilise...")
+                time.sleep(3)
 
-                # Step 3: Restore brightness (uses bypass_queue so goes straight
+                # Step 3: Reset the serial port to clear any corrupted state
+                # left over from the suspend.  The kernel may have power-cycled
+                # the USB host controller, leaving stale bytes in the buffer.
+                self._reset_serial()
+
+                # Step 4: Restore brightness (uses bypass_queue so goes straight
                 # to the serial port, not through the update queue).
                 logger.info("Restoring screen brightness")
                 self._display.turn_on()
 
-                # Step 4: Redraw static images and text.  These go through the
+                # Step 5: Redraw static images and text.  These go through the
                 # queue and will be picked up by the QueueHandler, which should
                 # now be running normally again.
                 logger.info("Redrawing static display content")
@@ -109,6 +114,36 @@ class SleepMonitor:
                 )
             except Exception as e:
                 logger.error(f"Failed to restore screen on wake: {e}")
+
+    def _reset_serial(self):
+        """
+        Close and reopen the serial port to clear any corrupted state from
+        suspend.  The USB host controller may have been power-cycled by the
+        kernel, leaving the pyserial file descriptor pointing at a stale
+        device.  Flushing the input buffer after reopening ensures we don't
+        read back garbage bytes that would confuse the command protocol.
+        """
+        try:
+            lcd = self._display.lcd
+            if lcd is None:
+                logger.warning("Cannot reset serial port — lcd object is None")
+                return
+
+            logger.info("Resetting serial port (close → reopen → flush)...")
+
+            # Close the existing (possibly stale) connection
+            lcd.closeSerial()
+            time.sleep(0.5)
+
+            # Reopen the serial port fresh
+            lcd.openSerial()
+
+            # Flush any garbage left in the input buffer
+            lcd.serial_flush_input()
+
+            logger.info("Serial port reset complete")
+        except Exception as e:
+            logger.error(f"Failed to reset serial port on wake: {e}")
 
     def _monitor_loop(self):
         """
