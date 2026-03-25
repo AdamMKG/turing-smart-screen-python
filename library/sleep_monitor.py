@@ -96,8 +96,14 @@ class SleepMonitor:
                 logger.debug("Waiting 3s for USB serial device to stabilise...")
                 time.sleep(3)
 
-                # Step 4: Reset the serial port to clear any corrupted state
+                # Step 4: Reset the serial port and re-initialize the display
+                # protocol.  After suspend the screen's protocol state machine
+                # is in an unknown state (it was mid-bitmap when we slept).
+                # Just reopening the serial port is not enough — we must
+                # re-send HELLO + orientation so the screen accepts new
+                # bitmap commands.
                 self._reset_serial()
+                self._reinitialize_display_protocol()
 
                 # Step 5: Flush the queue a second time (discard dynamic updates
                 # that accumulated during the 3s wait).
@@ -286,6 +292,48 @@ class SleepMonitor:
             logger.info("Serial port reset complete")
         except Exception as e:
             logger.error(f"Failed to reset serial port on wake: {e}")
+
+    def _reinitialize_display_protocol(self):
+        """
+        Re-send the display protocol initialization commands (HELLO +
+        orientation) so the screen's internal state machine is ready to
+        accept bitmap updates again.
+
+        After suspend the screen was mid-way through processing a bitmap
+        command.  Simply reopening the serial port gives us a clean byte
+        stream, but the screen still thinks it's in the middle of that
+        old command.  Re-running InitializeComm sends HELLO which resets
+        the screen's command parser, and SetOrientation puts it back into
+        the correct rendering mode.
+        """
+        try:
+            logger.info("Re-initializing display protocol (HELLO + orientation)...")
+            self._display.lcd.InitializeComm()
+
+            from library import config
+            from library.lcd.lcd_comm import Orientation
+
+            # Determine the correct orientation from theme config
+            orientation_str = config.THEME_DATA["display"].get(
+                "DISPLAY_ORIENTATION", "portrait"
+            )
+            reverse = config.CONFIG_DATA["display"].get("DISPLAY_REVERSE", False)
+
+            if orientation_str == "portrait":
+                orientation = (
+                    Orientation.REVERSE_PORTRAIT if reverse else Orientation.PORTRAIT
+                )
+            elif orientation_str == "landscape":
+                orientation = (
+                    Orientation.REVERSE_LANDSCAPE if reverse else Orientation.LANDSCAPE
+                )
+            else:
+                orientation = Orientation.PORTRAIT
+
+            self._display.lcd.SetOrientation(orientation=orientation)
+            logger.info("Display protocol re-initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to re-initialize display protocol on wake: {e}")
 
     def _monitor_loop(self):
         """
