@@ -1,0 +1,53 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# Byte-compiled / optimized
+*.pyc
+
+# Log files
+*.log
+logfile.log
+log.log
+
+# Backup files (editor)
+*~
+*.bak
+*.swp
+*.swo
+*#
+
+# Temporary files
+tmp
+*.tmp
+
+# Screenshots/captures
+screencap.png
+
+# IDE / Editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Environment variables
+.env
+.env.local
