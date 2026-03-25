@@ -4,10 +4,14 @@
 # Sleep/Wake monitor for Linux using D-Bus (systemd-logind)
 # Listens for the PrepareForSleep signal from org.freedesktop.login1.Manager
 # - On sleep (PrepareForSleep=true):  dims the screen to brightness 0
-# - On wake  (PrepareForSleep=false): restores brightness and redraws static content
+# - On wake  (PrepareForSleep=false): flushes stale queue, waits for USB to stabilise,
+#                                      restores brightness and redraws static content
 
+import queue
 import threading
+import time
 
+import library.config as config
 from library.log import logger
 
 
@@ -41,6 +45,25 @@ class SleepMonitor:
                 pass
         logger.info("Linux sleep/wake monitor stopped")
 
+    def _flush_queue(self):
+        """
+        Drain any stale display commands that were queued before sleep.
+        During suspend the scheduler threads freeze mid-cycle; when they resume
+        the queue may contain partially-written or outdated serial commands that
+        would block or corrupt the display if processed after wake.
+        """
+        flushed = 0
+        try:
+            while True:
+                config.update_queue.get_nowait()
+                flushed += 1
+        except queue.Empty:
+            pass
+        if flushed:
+            logger.info(f"Flushed {flushed} stale item(s) from the display queue")
+        else:
+            logger.debug("Display queue was already empty on wake")
+
     def _on_prepare_for_sleep(self, going_to_sleep):
         """
         Callback invoked by D-Bus when the system is about to sleep or has just woken up.
@@ -55,15 +78,35 @@ class SleepMonitor:
             except Exception as e:
                 logger.error(f"Failed to dim screen on sleep: {e}")
         else:
-            logger.info(
-                "System is waking up — restoring screen brightness and static content"
-            )
+            logger.info("System is waking up — beginning display recovery sequence")
             try:
+                # Step 1: Flush any stale commands that were queued before sleep.
+                # The scheduler threads were frozen by the kernel and may have left
+                # partial or outdated serial writes in the queue.
+                self._flush_queue()
+
+                # Step 2: Give the USB serial device time to re-enumerate after
+                # the host controller resumes.  Without this pause the serial
+                # writes below can fail or silently drop data.
+                logger.debug("Waiting 2s for USB serial device to stabilise...")
+                time.sleep(2)
+
+                # Step 3: Restore brightness (uses bypass_queue so goes straight
+                # to the serial port, not through the update queue).
+                logger.info("Restoring screen brightness")
                 self._display.turn_on()
-                # Redraw static images and text since some screen models lose their
-                # framebuffer contents after a prolonged period with no USB activity
+
+                # Step 4: Redraw static images and text.  These go through the
+                # queue and will be picked up by the QueueHandler, which should
+                # now be running normally again.
+                logger.info("Redrawing static display content")
                 self._display.display_static_images()
                 self._display.display_static_text()
+
+                logger.info(
+                    "Display recovery sequence complete — "
+                    "dynamic stats will refresh on their next scheduled cycle"
+                )
             except Exception as e:
                 logger.error(f"Failed to restore screen on wake: {e}")
 
