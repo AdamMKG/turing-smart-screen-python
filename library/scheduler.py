@@ -68,7 +68,17 @@ def schedule(interval):
                     periodic,
                     (scheduler, periodic_interval, action, actionargs),
                 )
-            action(*actionargs)
+            try:
+                action(*actionargs)
+            except Exception as e:
+                # Log but survive: after sleep/wake, sensor reads or display writes
+                # may fail transiently (stale GPU handles, /proc delays, serial errors).
+                # If we let the exception propagate it kills sched.scheduler.run()
+                # which kills the thread — permanently losing this stat forever.
+                logger.error(
+                    "Scheduled task '%s' failed (will retry next cycle): %s"
+                    % (getattr(action, "__name__", str(action)), e)
+                )
 
         @wraps(func)
         def wrap(*args, **kwargs):

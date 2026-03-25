@@ -14,6 +14,10 @@ import time
 import library.config as config
 from library.log import logger
 
+# How long (seconds) after wake to keep printing health-check diagnostics
+_HEALTH_CHECK_DURATION = 30
+_HEALTH_CHECK_INTERVAL = 5
+
 
 class SleepMonitor:
     """Monitors D-Bus for system sleep/wake events and controls display brightness accordingly."""
@@ -80,53 +84,53 @@ class SleepMonitor:
         else:
             logger.info("System is waking up — beginning display recovery sequence")
             try:
-                # Step 1: Flush any stale commands that were queued before sleep.
-                # The scheduler threads were frozen by the kernel and may have left
-                # partial or outdated serial writes in the queue.
+                # Step 1: Log the state of every thread so we can see what survived sleep
+                self._log_thread_states("WAKE-START")
+
+                # Step 2: Flush any stale commands that were queued before sleep.
                 self._flush_queue()
 
-                # Step 2: Give the USB serial device time to re-enumerate after
-                # the host controller resumes.  Without this pause the serial
-                # writes below can fail or silently drop data.
+                # Step 3: Give the USB serial device time to re-enumerate after
+                # the host controller resumes.
                 logger.debug("Waiting 3s for USB serial device to stabilise...")
                 time.sleep(3)
 
-                # Step 3: Reset the serial port to clear any corrupted state
-                # left over from the suspend.  The kernel may have power-cycled
-                # the USB host controller, leaving stale bytes in the buffer.
+                # Step 4: Reset the serial port to clear any corrupted state
                 self._reset_serial()
 
-                # Step 4: Flush the queue a second time.  During the 3s wait the
-                # scheduler threads (1-second intervals for CPU%, GPU, DATE etc.)
-                # will have already pushed dynamic updates into the queue.  If we
-                # let those through before the static content they'll be drawn and
-                # then immediately buried under the full-screen background image.
+                # Step 5: Flush the queue a second time (discard dynamic updates
+                # that accumulated during the 3s wait).
                 self._flush_queue()
 
-                # Step 5: Restore brightness (uses bypass_queue so goes straight
-                # to the serial port, not through the update queue).
+                # Step 6: Log thread states again after the serial reset
+                self._log_thread_states("WAKE-POST-SERIAL-RESET")
+
+                # Step 7: Restore brightness (bypass_queue — direct serial write)
                 logger.info("Restoring screen brightness")
                 self._display.turn_on()
 
-                # Step 6: Redraw static content FIRST (background image + header
-                # text).  These go through the queue and must be processed before
-                # any dynamic stats so that the stats draw on top of the
-                # background rather than being overwritten by it.
+                # Step 8: Redraw static content FIRST so dynamic stats layer on top
                 logger.info("Redrawing static display content")
                 self._display.display_static_images()
                 self._display.display_static_text()
 
-                # Step 7: Wait for the static content to be fully sent through
-                # the queue before we allow dynamic stats to pile on top.
-                # The background image is 480x1920 on the 8.8" screen and takes
-                # a noticeable amount of time to transmit over serial.
+                # Step 9: Wait for static content to be fully sent
                 logger.info("Waiting for static content to finish drawing...")
                 self._wait_for_queue_drain(timeout=15)
+
+                # Step 10: Log thread states after static content is drawn
+                self._log_thread_states("WAKE-POST-STATIC-DRAW")
 
                 logger.info(
                     "Display recovery complete — "
                     "dynamic stats will now layer on top of the background"
                 )
+
+                # Step 11: Start a background health-check that logs queue size
+                # and thread states every few seconds for a short window after
+                # wake, so we can see whether dynamic stats are flowing.
+                self._start_health_check()
+
             except Exception as e:
                 logger.error(f"Failed to restore screen on wake: {e}")
 
@@ -148,6 +152,87 @@ class SleepMonitor:
             )
         else:
             logger.debug(f"Queue drained in {waited:.1f}s")
+
+    def _log_thread_states(self, label: str):
+        """
+        Log the name and alive-status of every thread in the process.
+        This lets us see whether scheduler stat threads (CPU_Percentage,
+        GPU_Stats, Queue_Handler, etc.) survived the sleep/wake transition.
+        """
+        threads = threading.enumerate()
+        alive_names = []
+        dead_names = []
+        for t in threads:
+            if t.is_alive():
+                alive_names.append(t.name)
+            else:
+                dead_names.append(t.name)
+
+        logger.info(
+            f"[{label}] Threads alive ({len(alive_names)}): {', '.join(sorted(alive_names))}"
+        )
+        if dead_names:
+            logger.warning(
+                f"[{label}] Threads DEAD ({len(dead_names)}): {', '.join(sorted(dead_names))}"
+            )
+
+        logger.info(f"[{label}] Queue size: {config.update_queue.qsize()}")
+
+    def _start_health_check(self):
+        """
+        Spawn a short-lived daemon thread that logs queue size and thread
+        states every few seconds after wake.  This tells us whether dynamic
+        stat items are flowing into the queue and being processed.
+        """
+
+        def _health_loop():
+            elapsed = 0.0
+            prev_qsize = -1
+            while elapsed < _HEALTH_CHECK_DURATION:
+                time.sleep(_HEALTH_CHECK_INTERVAL)
+                elapsed += _HEALTH_CHECK_INTERVAL
+                qsize = config.update_queue.qsize()
+                delta = qsize - prev_qsize if prev_qsize >= 0 else 0
+                prev_qsize = qsize
+
+                # Count scheduler-related threads that should be alive
+                sched_threads = [
+                    t
+                    for t in threading.enumerate()
+                    if t.name
+                    in (
+                        "CPU_Percentage",
+                        "CPU_Frequency",
+                        "CPU_Load",
+                        "CPU_FanSpeed",
+                        "GPU_Stats",
+                        "Memory_Stats",
+                        "Disk_Stats",
+                        "Net_Stats",
+                        "Date_Stats",
+                        "SystemUptime_Stats",
+                        "Custom_Stats",
+                        "Weather_Stats",
+                        "Ping_Stats",
+                        "Queue_Handler",
+                    )
+                ]
+                alive = [t.name for t in sched_threads if t.is_alive()]
+                dead = [t.name for t in sched_threads if not t.is_alive()]
+
+                logger.info(
+                    f"[HEALTH +{elapsed:.0f}s] Queue size: {qsize} (delta: {delta:+d}) | "
+                    f"Scheduler threads alive: {len(alive)}/{len(alive) + len(dead)}"
+                )
+                if dead:
+                    logger.warning(
+                        f"[HEALTH +{elapsed:.0f}s] DEAD scheduler threads: {', '.join(sorted(dead))}"
+                    )
+
+            logger.info("[HEALTH] Post-wake health check complete")
+
+        t = threading.Thread(target=_health_loop, name="WakeHealthCheck", daemon=True)
+        t.start()
 
     def _reset_serial(self):
         """
