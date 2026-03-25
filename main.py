@@ -54,6 +54,7 @@ try:
     import library.scheduler as scheduler
     from library.display import display
     from library.log import logger
+    from library.sleep_monitor import SleepMonitor
 
 except Exception as e:
     print(
@@ -95,7 +96,14 @@ if __name__ == "__main__":
 
         logger.debug("(Waited %.1fs)" % wait_time)
 
+    # Sleep monitor instance (Linux only, initialized later)
+    sleep_monitor = None
+
     def clean_stop(tray_icon=None):
+        # Stop the sleep/wake monitor if running
+        if sleep_monitor is not None:
+            sleep_monitor.stop()
+
         # Turn screen and LEDs off before stopping
         display.turn_off()
 
@@ -205,6 +213,14 @@ if __name__ == "__main__":
     # Initialize the display
     logger.info("Initialize display")
     display.initialize_display()
+
+    # Start Linux sleep/wake monitor (dims screen on suspend, restores on wake)
+    if platform.system() == "Linux":
+        try:
+            sleep_monitor = SleepMonitor(display)
+            sleep_monitor.start()
+        except Exception as e:
+            logger.warning("Could not start sleep/wake monitor: %s" % str(e))
 
     # Create all static images
     display.display_static_images()

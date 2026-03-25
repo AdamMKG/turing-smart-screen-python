@@ -7,7 +7,7 @@ babel~=2.17.0          # Date/time formatting
 ruamel.yaml~=0.18.14    # For configuration editor
 sv-ttk~=2.6.1          # Tk Sun Valley theme for configuration editor
 tkinter-tooltip~=3.1.2 # Tooltips for configuration editor
-uptime~=3.0.1          # For System Uptime 
+uptime~=3.0.1          # For System Uptime
 requests~=2.32.4       # HTTP library
 ping3~=4.0.8           # ICMP ping implementation using raw socket
 pyinstaller~=6.14.2    # bundles a Python application and all its dependencies into a single package
@@ -29,6 +29,10 @@ pyamdgpuinfo~=2.1.6; sys_platform=="linux" and python_version <= "3.12"
 
 # Following packages are for AMD GPU on Windows
 pyadl~=0.1; sys_platform=="win32"
+
+# Following packages are for Linux sleep/wake monitoring (D-Bus)
+dbus-python~=1.4.0; sys_platform=="linux"
+PyGObject~=3.56.1; sys_platform=="linux"
 
 # Following packages are for LibreHardwareMonitor integration on Windows
 pythonnet~=3.0.5; sys_platform=="win32"

@@ -140,11 +140,12 @@ class Display:
             logger.error(f"Failed to dim screen: {e}")
 
     def turn_on(self):
-        """Restores brightness to a default level."""
+        """Restores brightness to the level configured in config.yaml."""
         try:
-            # We'll hardcode 50% for now to bypass the 'config' error
-            level = 50
-            logger.info(f"Restoring screen brightness to {level}...")
+            level = config.CONFIG_DATA["display"].get("BRIGHTNESS", 25)
+            # Clamp to valid range
+            level = max(0, min(100, int(level)))
+            logger.info(f"Restoring screen brightness to {level}%...")
             if hasattr(self, "lcd"):
                 self.lcd.SetBrightness(level)
         except Exception as e:
