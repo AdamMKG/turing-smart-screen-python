@@ -30,6 +30,7 @@ import library.stats as stats
 from library.log import logger
 
 STOPPING = False
+PAUSED = False
 
 
 def async_job(threadname=None):
@@ -68,6 +69,10 @@ def schedule(interval):
                     periodic,
                     (scheduler, periodic_interval, action, actionargs),
                 )
+            # If paused (during wake recovery), skip executing the action
+            # so we don't fight over the serial port with the recovery sequence
+            if PAUSED:
+                return
             try:
                 action(*actionargs)
             except Exception as e:
@@ -259,6 +264,10 @@ def PingStats():
 @async_job("Queue_Handler")
 @schedule(timedelta(milliseconds=1).total_seconds())
 def QueueHandler():
+    # If paused (during wake recovery), don't process queue items
+    if PAUSED:
+        time.sleep(0.5)
+        return
     # Do next action waiting in the queue
     if STOPPING:
         # Empty the action queue to allow program to exit cleanly

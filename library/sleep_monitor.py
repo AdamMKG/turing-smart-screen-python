@@ -12,6 +12,7 @@ import threading
 import time
 
 import library.config as config
+import library.scheduler as scheduler
 from library.display import display
 from library.log import logger
 
@@ -85,47 +86,54 @@ class SleepMonitor:
         else:
             logger.info("System is waking up — beginning display recovery sequence")
             try:
-                # Step 1: Log the state of every thread so we can see what survived sleep
+                # Step 1: PAUSE all scheduler threads so they stop touching
+                # the serial port.  Without this, the QueueHandler and stat
+                # threads race with our recovery (closing/reopening serial
+                # from multiple threads simultaneously).
+                scheduler.PAUSED = True
+                logger.info("Scheduler PAUSED for wake recovery")
+
+                # Step 2: Log the state of every thread so we can see what survived sleep
                 self._log_thread_states("WAKE-START")
 
-                # Step 2: Flush any stale commands that were queued before sleep.
+                # Step 3: Flush any stale commands that were queued before sleep.
                 self._flush_queue()
 
-                # Step 3: Give the USB serial device time to re-enumerate after
-                # the host controller resumes.
+                # Step 4: Give the USB serial device time to re-enumerate after
+                # the host controller resumes, AND give the now-paused scheduler
+                # threads time to finish any in-flight serial operations.
                 logger.debug("Waiting 3s for USB serial device to stabilise...")
                 time.sleep(3)
 
-                # Step 4: Reset the serial port and re-initialize the display
-                # protocol.  After suspend the screen's protocol state machine
-                # is in an unknown state (it was mid-bitmap when we slept).
-                # Just reopening the serial port is not enough — we must
-                # re-send HELLO + orientation so the screen accepts new
-                # bitmap commands.
+                # Step 5: Reset the serial port and re-initialize the display
+                # protocol.  Now safe because no other thread is using serial.
                 self._reset_serial()
                 self._reinitialize_display_protocol()
 
-                # Step 5: Flush the queue a second time (discard dynamic updates
-                # that accumulated during the 3s wait).
+                # Step 6: Flush the queue again (discard anything that accumulated
+                # before the pause took effect).
                 self._flush_queue()
 
-                # Step 6: Log thread states again after the serial reset
+                # Step 7: Log thread states after the serial reset
                 self._log_thread_states("WAKE-POST-SERIAL-RESET")
 
-                # Step 7: Restore brightness (bypass_queue — direct serial write)
+                # Step 8: Restore brightness (bypass_queue — direct serial write)
                 logger.info("Restoring screen brightness")
                 self._display.turn_on()
 
-                # Step 8: Redraw static content FIRST so dynamic stats layer on top
+                # Step 9: Redraw static content FIRST so dynamic stats layer on top
                 logger.info("Redrawing static display content")
                 self._display.display_static_images()
                 self._display.display_static_text()
 
-                # Step 9: Wait for static content to be fully sent
+                # Step 10: Wait for static content to be fully sent
                 logger.info("Waiting for static content to finish drawing...")
+
+                # Briefly unpause QueueHandler so it can drain the static content
+                scheduler.PAUSED = False
                 self._wait_for_queue_drain(timeout=15)
 
-                # Step 10: Log thread states after static content is drawn
+                # Step 11: Log thread states after static content is drawn
                 self._log_thread_states("WAKE-POST-STATIC-DRAW")
 
                 logger.info(
@@ -133,13 +141,18 @@ class SleepMonitor:
                     "dynamic stats will now layer on top of the background"
                 )
 
-                # Step 11: Start a background health-check that logs queue size
+                # Step 12: Start a background health-check that logs queue size
                 # and thread states every few seconds for a short window after
                 # wake, so we can see whether dynamic stats are flowing.
                 self._start_health_check()
 
             except Exception as e:
                 logger.error(f"Failed to restore screen on wake: {e}")
+            finally:
+                # Always unpause, even if recovery failed
+                if scheduler.PAUSED:
+                    scheduler.PAUSED = False
+                    logger.info("Scheduler UNPAUSED (recovery cleanup)")
 
     def _wait_for_queue_drain(self, timeout: int = 15):
         """
