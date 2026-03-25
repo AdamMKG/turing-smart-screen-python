@@ -102,8 +102,11 @@ def schedule(interval):
 )
 def CPUPercentage():
     """Refresh the CPU Percentage"""
-    # logger.debug("Refresh CPU Percentage")
+    logger.debug("Refresh CPU Percentage")
     stats.CPU.percentage()
+    logger.debug(
+        "Refresh CPU Percentage DONE, queue size: %d" % config.update_queue.qsize()
+    )
 
 
 @async_job("CPU_Frequency")
@@ -206,8 +209,11 @@ def NetStats():
     ).total_seconds()
 )
 def DateStats():
-    # logger.debug("Refresh date stats")
+    logger.debug("Refresh date stats")
     stats.Date.stats()
+    logger.debug(
+        "Refresh date stats DONE, queue size: %d" % config.update_queue.qsize()
+    )
 
 
 @async_job("SystemUptime_Stats")
@@ -260,6 +266,9 @@ def PingStats():
 @schedule(timedelta(milliseconds=1).total_seconds())
 def QueueHandler():
     # Do next action waiting in the queue
+    qsize = config.update_queue.qsize()
+    if qsize > 0:
+        logger.debug("QueueHandler processing, queue size: %d" % qsize)
     if STOPPING:
         # Empty the action queue to allow program to exit cleanly
         while not config.update_queue.empty():
