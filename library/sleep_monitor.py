@@ -96,24 +96,58 @@ class SleepMonitor:
                 # the USB host controller, leaving stale bytes in the buffer.
                 self._reset_serial()
 
-                # Step 4: Restore brightness (uses bypass_queue so goes straight
+                # Step 4: Flush the queue a second time.  During the 3s wait the
+                # scheduler threads (1-second intervals for CPU%, GPU, DATE etc.)
+                # will have already pushed dynamic updates into the queue.  If we
+                # let those through before the static content they'll be drawn and
+                # then immediately buried under the full-screen background image.
+                self._flush_queue()
+
+                # Step 5: Restore brightness (uses bypass_queue so goes straight
                 # to the serial port, not through the update queue).
                 logger.info("Restoring screen brightness")
                 self._display.turn_on()
 
-                # Step 5: Redraw static images and text.  These go through the
-                # queue and will be picked up by the QueueHandler, which should
-                # now be running normally again.
+                # Step 6: Redraw static content FIRST (background image + header
+                # text).  These go through the queue and must be processed before
+                # any dynamic stats so that the stats draw on top of the
+                # background rather than being overwritten by it.
                 logger.info("Redrawing static display content")
                 self._display.display_static_images()
                 self._display.display_static_text()
 
+                # Step 7: Wait for the static content to be fully sent through
+                # the queue before we allow dynamic stats to pile on top.
+                # The background image is 480x1920 on the 8.8" screen and takes
+                # a noticeable amount of time to transmit over serial.
+                logger.info("Waiting for static content to finish drawing...")
+                self._wait_for_queue_drain(timeout=15)
+
                 logger.info(
-                    "Display recovery sequence complete — "
-                    "dynamic stats will refresh on their next scheduled cycle"
+                    "Display recovery complete — "
+                    "dynamic stats will now layer on top of the background"
                 )
             except Exception as e:
                 logger.error(f"Failed to restore screen on wake: {e}")
+
+    def _wait_for_queue_drain(self, timeout: int = 15):
+        """
+        Block until the update queue is empty or the timeout expires.
+        This ensures that the static content (background image + headers)
+        has been fully transmitted to the screen before the scheduler
+        threads start pushing dynamic stat updates on top.
+        """
+        waited = 0.0
+        while not config.update_queue.empty() and waited < timeout:
+            time.sleep(0.2)
+            waited += 0.2
+        if waited >= timeout:
+            logger.warning(
+                f"Queue did not drain within {timeout}s "
+                f"({config.update_queue.qsize()} items remaining)"
+            )
+        else:
+            logger.debug(f"Queue drained in {waited:.1f}s")
 
     def _reset_serial(self):
         """
