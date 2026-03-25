@@ -305,9 +305,27 @@ class SleepMonitor:
         old command.  Re-running InitializeComm sends HELLO which resets
         the screen's command parser, and SetOrientation puts it back into
         the correct rendering mode.
+
+        Critically, we also reset Count.Start to 0.  The partial bitmap
+        update protocol embeds a sequential counter in every command.
+        HELLO resets the screen's internal counter to 0, but if our
+        Count.Start is still at some high value from before sleep, the
+        screen silently discards every partial update because the counter
+        is out of sync.  Full-screen updates (used for the background)
+        don't use this counter — which is why the background draws fine
+        but dynamic stats appear frozen.
         """
         try:
             logger.info("Re-initializing display protocol (HELLO + orientation)...")
+
+            # Reset the partial-update counter BEFORE re-init so it matches
+            # the screen's freshly-reset internal counter.
+            from library.lcd.lcd_comm_rev_c import Count
+
+            old_count = Count.Start
+            Count.Start = 0
+            logger.info(f"Reset partial-update counter (Count.Start: {old_count} → 0)")
+
             self._display.lcd.InitializeComm()
 
             from library import config
