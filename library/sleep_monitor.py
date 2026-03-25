@@ -12,6 +12,7 @@ import threading
 import time
 
 import library.config as config
+from library.display import display
 from library.log import logger
 
 # How long (seconds) after wake to keep printing health-check diagnostics
@@ -220,13 +221,35 @@ class SleepMonitor:
                 alive = [t.name for t in sched_threads if t.is_alive()]
                 dead = [t.name for t in sched_threads if not t.is_alive()]
 
+                # Check if the update_queue_mutex is stuck (deadlocked)
+                mutex_status = "UNKNOWN"
+                try:
+                    lcd = display.lcd
+                    if lcd is not None and hasattr(lcd, "update_queue_mutex"):
+                        got_lock = lcd.update_queue_mutex.acquire(timeout=0.5)
+                        if got_lock:
+                            lcd.update_queue_mutex.release()
+                            mutex_status = "FREE"
+                        else:
+                            mutex_status = "LOCKED/DEADLOCKED"
+                    else:
+                        mutex_status = "N/A"
+                except Exception as e:
+                    mutex_status = f"ERROR: {e}"
+
                 logger.info(
                     f"[HEALTH +{elapsed:.0f}s] Queue size: {qsize} (delta: {delta:+d}) | "
-                    f"Scheduler threads alive: {len(alive)}/{len(alive) + len(dead)}"
+                    f"Scheduler threads alive: {len(alive)}/{len(alive) + len(dead)} | "
+                    f"update_queue_mutex: {mutex_status}"
                 )
                 if dead:
                     logger.warning(
                         f"[HEALTH +{elapsed:.0f}s] DEAD scheduler threads: {', '.join(sorted(dead))}"
+                    )
+                if mutex_status == "LOCKED/DEADLOCKED":
+                    logger.error(
+                        f"[HEALTH +{elapsed:.0f}s] update_queue_mutex appears deadlocked! "
+                        "All stat threads are likely blocked waiting to acquire it."
                     )
 
             logger.info("[HEALTH] Post-wake health check complete")
